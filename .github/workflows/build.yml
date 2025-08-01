@@ -1,0 +1,84 @@
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.11.1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set version and tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            VERSION="0.0.0-${{ github.event.number }}-${{ github.run_id }}"
+          else
+            VERSION="0.0.0-edge-${GITHUB_SHA:0:7}"
+          fi
+          IMAGE="ghcr.io/$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')/lancache-adguardhome-sync"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAG=$IMAGE:$VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.version.outputs.TAG }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ github.event.repository.updated_at }}
+          labels: |
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+            org.opencontainers.image.title=lancache-adguardhome-sync
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+      
+      - name: Comment PR with image tag
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = `${{ steps.version.outputs.VERSION }}`;
+            const repoOwnerLower = `${{ github.repository_owner }}`.toLowerCase();
+            const comment = `🐳 **Container image built and pushed!**
+            
+            You can test this PR using:
+            \`\`\`bash
+            docker run --rm ghcr.io/${repoOwnerLower}/lancache-adguardhome-sync:${tag} --version
+            \`\`\`
+            
+            Or use it in your docker-compose/deployment with tag: \`${tag}\``;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
